@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -E \"\\\\.\\(md|txt|yml|yaml|json\\)$\")",
+      "Bash(go doc:*)",
+      "Bash(go build:*)",
+      "Bash(go vet:*)"
+    ]
+  }
+}
