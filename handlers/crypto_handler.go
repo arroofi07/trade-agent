@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -153,7 +154,6 @@ func (h *CryptoHandler) Analyze(c fiber.Ctx) error {
 		AnalyzedAt: time.Now(),
 	})
 }
-
 
 // =============================================
 // GET /api/crypto/price/:symbol
@@ -389,6 +389,20 @@ func (h *CryptoHandler) AnalyzeV2(c fiber.Ctx) error {
 	// 8. Hitung sinyal final (quant 60% + AI 40%)
 	finalSignal, finalConfidence := computeFinalSignal(quantScore, aiResult, mtf)
 
+	// 8.1 Penalti confidence jika kualitas data volume lemah (umum di provider tanpa volume per-candle)
+	finalConfidence = applyDataQualityPenalty(finalConfidence, indicators, price)
+
+	// 8.2 Hard risk gate untuk mencegah entry di kondisi market yang buruk
+	if ok, reason := passesRiskGate(finalSignal, aiResult, indicators, price, volume); !ok {
+		finalSignal = "WAIT"
+		if finalConfidence > 45 {
+			finalConfidence = 45
+		}
+		if reason != "" {
+			aiResult.Reasoning = strings.TrimSpace(aiResult.Reasoning + " | RiskGate: " + reason)
+		}
+	}
+
 	// 9. Simpan ke database secara async
 	go h.saveHistoryV2(symbol, timeframe, price, change, volume, indicators, patterns, quantScore, aiResult, finalSignal, finalConfidence)
 
@@ -443,10 +457,16 @@ func (h *CryptoHandler) calcMTF(symbol, primaryTF string, primaryIndicators mode
 				return
 			}
 			pat := h.pattern.Analyze(kl)
-			// Estimasi price dari indikator (gunakan SMA20 sebagai proxy)
-			estimatedPrice := ind.SMA20
-			if estimatedPrice == 0 {
+			// Gunakan close candle terakhir agar scoring MTF merepresentasikan harga aktual timeframe terkait.
+			estimatedPrice := 0.0
+			if len(kl) > 0 {
+				estimatedPrice = kl[len(kl)-1].Close
+			}
+			if estimatedPrice <= 0 {
 				estimatedPrice = primaryIndicators.SMA20
+			}
+			if estimatedPrice <= 0 {
+				estimatedPrice = ind.SMA20
 			}
 			q := h.quant.Score(ind, pat, estimatedPrice)
 			ch <- tfResult{tf: t, ind: ind, quant: q}
@@ -579,6 +599,73 @@ func computeFinalSignal(quant *models.QuantScore, ai *models.AIAnalysisResult, m
 	}
 
 	return finalSignal, finalConfidence
+}
+
+func applyDataQualityPenalty(confidence int, ind *models.IndicatorResult, price float64) int {
+	if ind == nil {
+		return confidence
+	}
+	// OBV=0 dan VWAP==price sering menandakan provider tidak punya volume per-candle.
+	if ind.OBV == 0 && ind.VWAP == price {
+		confidence -= 15
+	}
+	if confidence < 0 {
+		return 0
+	}
+	if confidence > 100 {
+		return 100
+	}
+	return confidence
+}
+
+func passesRiskGate(signal string, ai *models.AIAnalysisResult, ind *models.IndicatorResult, price, volume float64) (bool, string) {
+	if signal == "WAIT" {
+		return true, ""
+	}
+	if volume > 0 && volume < 250000 {
+		return false, "volume rendah (<$250k)"
+	}
+	if ind != nil && price > 0 && ind.ATR > 0 {
+		atrPct := (ind.ATR / price) * 100
+		if atrPct > 4.5 {
+			return false, "volatilitas terlalu tinggi (ATR>4.5%)"
+		}
+		if atrPct < 0.1 {
+			return false, "volatilitas terlalu rendah (ATR<0.1%)"
+		}
+	}
+	rr := extractRiskReward(ai, signal)
+	if rr > 0 && rr < 1.3 {
+		return false, "risk-reward < 1.3"
+	}
+	return true, ""
+}
+
+func extractRiskReward(ai *models.AIAnalysisResult, signal string) float64 {
+	if ai == nil {
+		return 0
+	}
+	if ai.RiskReward > 0 {
+		return ai.RiskReward
+	}
+	if ai.Entry <= 0 || ai.StopLoss <= 0 || ai.TP1 <= 0 {
+		return 0
+	}
+	risk := math.Abs(ai.Entry - ai.StopLoss)
+	if risk == 0 {
+		return 0
+	}
+	reward := math.Abs(ai.TP1 - ai.Entry)
+	if reward == 0 {
+		return 0
+	}
+	if signal == "SHORT" && ai.TP1 > ai.Entry {
+		return 0
+	}
+	if signal == "LONG" && ai.TP1 < ai.Entry {
+		return 0
+	}
+	return reward / risk
 }
 
 // Helper: default stop loss jika AI tidak tersedia

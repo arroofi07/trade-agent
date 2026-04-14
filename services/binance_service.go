@@ -1,7 +1,6 @@
 package services
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,15 +22,9 @@ type BinanceService struct {
 
 // NewBinanceService membuat instance baru BinanceService
 func NewBinanceService() *BinanceService {
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec
-		},
-	}
 	return &BinanceService{
 		client: &http.Client{
-			Timeout:   15 * time.Second,
-			Transport: transport,
+			Timeout: 15 * time.Second,
 		},
 	}
 }

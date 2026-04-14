@@ -1,7 +1,6 @@
 package services
 
 import (
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -32,8 +31,8 @@ type cgCoinEntry struct {
 // coinCache menyimpan mapping symbol → CoinGecko ID secara global
 var coinCache struct {
 	sync.RWMutex
-	data      map[string]string // key: uppercase symbol, value: coingecko id
-	loadedAt  time.Time
+	data     map[string]string // key: uppercase symbol, value: coingecko id
+	loadedAt time.Time
 }
 
 // CoinGeckoService menggantikan BinanceService dengan method yang identik
@@ -43,15 +42,9 @@ type CoinGeckoService struct {
 
 // NewCoinGeckoService membuat instance baru dan langsung load coin list
 func NewCoinGeckoService() *CoinGeckoService {
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec
-		},
-	}
 	svc := &CoinGeckoService{
 		client: &http.Client{
-			Timeout:   20 * time.Second,
-			Transport: transport,
+			Timeout: 20 * time.Second,
 		},
 	}
 
